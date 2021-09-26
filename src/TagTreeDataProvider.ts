@@ -37,6 +37,10 @@ export class TagTreeDataProvider
     this._onDidChangeTreeData.event;
 
   private tagToTagNodeMap: { [key: string]: TagNode } = {};
+
+  public getTags(): string[] {
+    return keys(this.tagToTagNodeMap);
+  }
   // {
   //   tagA: { name: "tagA", childTags: [], filePaths: [] },
   //   tagB: { name: "tagB", childTags: [], filePaths: [] },
@@ -139,7 +143,9 @@ export class TagTreeDataProvider
       );
       return concat<Node>(
         values(this.tagToTagNodeMap),
-        values(this.filePathTofileNodeMap)
+        values(this.filePathTofileNodeMap).filter((fileNode) =>
+          isEmpty(fileNode.tags)
+        )
       );
     }
 
@@ -147,7 +153,9 @@ export class TagTreeDataProvider
       ? []
       : concat<Node>(
           element.childTags.map((tag) => this.tagToTagNodeMap[tag]),
-          element.filePaths.map((fp) => this.filePathTofileNodeMap[fp])
+          element.filePaths.map(
+            (filePath) => this.filePathTofileNodeMap[filePath]
+          )
         );
   }
 
@@ -173,20 +181,24 @@ export class TagTreeDataProvider
   }
 
   // Drag and drop controller
-
   public async onDrop(
     sources: vscode.TreeDataTransfer,
     target: Node
   ): Promise<void> {
-    // const treeItems = JSON.parse(await sources.items.get('text/treeitems')!.asString());
-    // let roots = this._getLocalRoots(treeItems);
-    // // Remove nodes that are already target's parent nodes
-    // roots = roots.filter(r => !this._isChild(this._getTreeElement(r.key), target));
-    // if (roots.length > 0) {
-    // 	// Reload parents of the moving elements
-    // 	const parents = roots.map(r => this.getParent(r));
-    // 	roots.forEach(r => this._reparentNode(r, target));
-    // 	this._onDidChangeTreeData.fire([...parents, target]);
-    // }
+    const treeItems = JSON.parse(
+      await sources.items.get("text/treeitems")!.asString()
+    );
+
+    if ("childTags" in target) {
+      treeItems.forEach((item: any) => {
+        // if ("filePath" in item) {
+        //   target.filePaths = union(target.filePaths, [item.filePath]);
+        // }
+        if ("childTags" in item) {
+          target.childTags = union(target.childTags, [item.name]);
+        }
+      });
+      this._onDidChangeTreeData.fire(undefined);
+    }
   }
 }
