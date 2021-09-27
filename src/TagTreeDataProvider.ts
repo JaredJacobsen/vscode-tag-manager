@@ -6,6 +6,7 @@ import {
   isEmpty,
   keys,
   pull,
+  sortBy,
   union,
   uniq,
   unset,
@@ -56,18 +57,29 @@ export class TagTreeDataProvider
     });
     context.subscriptions.push(view);
 
+    this.initTags();
+
     vscode.workspace.onDidSaveTextDocument((document) =>
       this.onWillSaveTextDocument(document)
     );
+  }
 
-    console.log("setup tree view");
+  private async initTags() {
+    const uris = await vscode.workspace.findFiles(
+      "**/*.*",
+      "**/node_modules/**"
+    );
+    uris.forEach((uri) => this.updateTagsForFile(uri.fsPath));
   }
 
   private async onWillSaveTextDocument(
     document: vscode.TextDocument
   ): Promise<void> {
-    if (this.matchesWatchedFileExtensions(document.uri)) {
-      const filePath = document.fileName;
+    this.updateTagsForFile(document.uri.fsPath);
+  }
+
+  private async updateTagsForFile(filePath: string): Promise<void> {
+    if (this.matchesWatchedFileExtensions(filePath)) {
       let fileNode = this.filePathTofileNodeMap[filePath];
       let shouldUpdate = false;
       if (!fileNode) {
@@ -105,7 +117,6 @@ export class TagTreeDataProvider
         }
       });
 
-      console.log("saving file", shouldUpdate, fileNode);
       if (shouldUpdate) {
         this._onDidChangeTreeData.fire(undefined);
         // this._onDidChangeTreeData.fire([...modifiedTags, fileNode]);
@@ -113,9 +124,9 @@ export class TagTreeDataProvider
     }
   }
 
-  private matchesWatchedFileExtensions(uri: Uri) {
+  private matchesWatchedFileExtensions(filePath: string) {
     const supportedFileExtensions = ["ts", "md", "txt"];
-    const fileExtension = uri.fsPath.split(".").pop();
+    const fileExtension = filePath.split(".").pop();
     return includes(supportedFileExtensions, fileExtension);
   }
 
@@ -133,30 +144,29 @@ export class TagTreeDataProvider
   // Tree data provider
 
   public getChildren(element?: Node): Node[] {
-    if (!element) {
-      console.log(
-        "children",
-        concat<Node>(
-          values(this.tagToTagNodeMap),
-          values(this.filePathTofileNodeMap)
-        )
-      );
-      return concat<Node>(
-        values(this.tagToTagNodeMap),
-        values(this.filePathTofileNodeMap).filter((fileNode) =>
-          isEmpty(fileNode.tags)
-        )
-      );
+    if (element && "filePath" in element) {
+      return [];
     }
 
-    return "filePath" in element
-      ? []
-      : concat<Node>(
-          element.childTags.map((tag) => this.tagToTagNodeMap[tag]),
-          element.filePaths.map(
+    const sortedTagNodes = sortBy(
+      element
+        ? element.childTags.map((tag) => this.tagToTagNodeMap[tag])
+        : values(this.tagToTagNodeMap),
+      ({ name }) => name
+    );
+
+    const sortedFileNodes = sortBy(
+      element
+        ? element.filePaths.map(
             (filePath) => this.filePathTofileNodeMap[filePath]
           )
-        );
+        : values(this.filePathTofileNodeMap).filter((fileNode) =>
+            isEmpty(fileNode.tags)
+          ),
+      ({ filePath }) => filePath
+    );
+
+    return concat<Node>(sortedTagNodes, sortedFileNodes);
   }
 
   public getTreeItem(element: Node): vscode.TreeItem {
