@@ -128,7 +128,7 @@ export class TagTreeDataProvider
   }
 
   private onDidSaveTextDocument(document: vscode.TextDocument): Promise<void> {
-    this.updateTagsForFile(document.uri);
+    return this.updateTagsForFile(document.uri);
   }
 
   private async updateTagsForFile(fileUri: Uri): Promise<void> {
