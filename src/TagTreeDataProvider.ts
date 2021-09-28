@@ -22,7 +22,8 @@ type TagNode = {
   filePaths: string[];
 };
 type FileNode = {
-  filePath: string;
+  fileUri: Uri;
+  fileName: string;
   tags: string[];
 };
 type Node = TagNode | FileNode;
@@ -69,22 +70,27 @@ export class TagTreeDataProvider
       "**/*.*",
       "**/node_modules/**"
     );
-    uris.forEach((uri) => this.updateTagsForFile(uri.fsPath));
+    uris.forEach((uri) => this.updateTagsForFile(uri));
   }
 
   private async onWillSaveTextDocument(
     document: vscode.TextDocument
   ): Promise<void> {
-    this.updateTagsForFile(document.uri.fsPath);
+    this.updateTagsForFile(document.uri);
   }
 
-  private async updateTagsForFile(filePath: string): Promise<void> {
+  private async updateTagsForFile(fileUri: Uri): Promise<void> {
+    const filePath = fileUri.fsPath;
     if (this.matchesWatchedFileExtensions(filePath)) {
       let fileNode = this.filePathTofileNodeMap[filePath];
       let shouldUpdate = false;
       if (!fileNode) {
         shouldUpdate = true;
-        fileNode = { filePath, tags: [] };
+        fileNode = {
+          fileUri,
+          fileName: fileUri.fsPath.split("/").pop() || "",
+          tags: [],
+        };
         this.filePathTofileNodeMap[filePath] = fileNode;
       }
 
@@ -125,7 +131,7 @@ export class TagTreeDataProvider
   }
 
   private matchesWatchedFileExtensions(filePath: string) {
-    const supportedFileExtensions = ["ts", "md", "txt"];
+    const supportedFileExtensions = ["js", "ts", "md", "txt"];
     const fileExtension = filePath.split(".").pop();
     return includes(supportedFileExtensions, fileExtension);
   }
@@ -144,7 +150,7 @@ export class TagTreeDataProvider
   // Tree data provider
 
   public getChildren(element?: Node): Node[] {
-    if (element && "filePath" in element) {
+    if (element && "fileUri" in element) {
       return [];
     }
 
@@ -163,18 +169,24 @@ export class TagTreeDataProvider
         : values(this.filePathTofileNodeMap).filter((fileNode) =>
             isEmpty(fileNode.tags)
           ),
-      ({ filePath }) => filePath
+      ({ fileName }) => fileName
     );
 
     return concat<Node>(sortedTagNodes, sortedFileNodes);
   }
 
   public getTreeItem(element: Node): vscode.TreeItem {
-    if ("filePath" in element) {
+    if ("fileName" in element) {
       return {
-        label: element.filePath.split("/").pop(),
-        tooltip: new vscode.MarkdownString(element.filePath),
+        label: element.fileName,
+        tooltip: new vscode.MarkdownString(element.fileUri.fsPath),
         collapsibleState: vscode.TreeItemCollapsibleState.None,
+        resourceUri: element.fileUri,
+        command: {
+          title: "",
+          command: "vscode.open",
+          arguments: [element.fileUri],
+        },
       };
     }
     return {
@@ -201,9 +213,6 @@ export class TagTreeDataProvider
 
     if ("childTags" in target) {
       treeItems.forEach((item: any) => {
-        // if ("filePath" in item) {
-        //   target.filePaths = union(target.filePaths, [item.filePath]);
-        // }
         if ("childTags" in item) {
           target.childTags = union(target.childTags, [item.name]);
         }
