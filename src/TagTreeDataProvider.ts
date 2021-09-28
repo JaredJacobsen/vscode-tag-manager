@@ -6,11 +6,13 @@ import {
   isEmpty,
   keys,
   pull,
+  remove,
   sortBy,
   union,
   uniq,
   unset,
   values,
+  without,
 } from "lodash";
 import * as vscode from "vscode";
 import { Uri } from "vscode";
@@ -60,8 +62,27 @@ export class TagTreeDataProvider
 
     this.initTags();
 
-    vscode.workspace.onDidSaveTextDocument((document) =>
-      this.onWillSaveTextDocument(document)
+    const disposable1 = vscode.workspace.onDidSaveTextDocument((document) =>
+      this.onDidSaveTextDocument(document)
+    );
+
+    const disposable2 = vscode.workspace.onDidDeleteFiles((e) =>
+      this.onDidDeleteFiles(e)
+    );
+
+    const disposable3 = vscode.workspace.onDidCreateFiles((e) =>
+      this.onDidCreateFiles(e)
+    );
+
+    const disposable4 = vscode.workspace.onDidRenameFiles((e) => {
+      this.onDidRenameFiles(e);
+    });
+
+    context.subscriptions.push(
+      disposable1,
+      disposable2,
+      disposable3,
+      disposable4
     );
   }
 
@@ -73,9 +94,40 @@ export class TagTreeDataProvider
     uris.forEach((uri) => this.updateTagsForFile(uri));
   }
 
-  private async onWillSaveTextDocument(
-    document: vscode.TextDocument
-  ): Promise<void> {
+  private onDidRenameFiles(e: vscode.FileRenameEvent) {
+    e.files.forEach(({ oldUri, newUri }) => {
+      this.removeFileData(oldUri);
+      this.updateTagsForFile(newUri);
+    });
+  }
+
+  private onDidCreateFiles(e: vscode.FileCreateEvent) {
+    e.files.forEach((file) => {
+      this.updateTagsForFile(file);
+    });
+  }
+
+  private onDidDeleteFiles(e: vscode.FileDeleteEvent) {
+    e.files.forEach((file) => {
+      this.removeFileData(file);
+    });
+
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  private removeFileData(file: Uri) {
+    this.filePathTofileNodeMap[file.fsPath].tags.forEach((tag) => {
+      const tagNode = this.tagToTagNodeMap[tag];
+      pull(tagNode.filePaths, file.fsPath);
+      if (isEmpty(tagNode.filePaths) && isEmpty(tagNode.childTags)) {
+        unset(this.tagToTagNodeMap, tag);
+      }
+    });
+
+    unset(this.filePathTofileNodeMap, file.fsPath);
+  }
+
+  private onDidSaveTextDocument(document: vscode.TextDocument): Promise<void> {
     this.updateTagsForFile(document.uri);
   }
 
