@@ -88,13 +88,14 @@ export class TagTreeDataProvider
 
   private async initTags() {
     const uris = await vscode.workspace.findFiles(
-      "src/**",
+      "**/src/**",
       "**/node_modules/**"
     );
     uris.forEach((uri) => this.updateTagsForFile(uri));
   }
 
   private onDidRenameFiles(e: vscode.FileRenameEvent) {
+    // console.log("move file", e);
     e.files.forEach(({ oldUri, newUri }) => {
       this.removeFileData(oldUri);
       this.updateTagsForFile(newUri);
@@ -131,66 +132,73 @@ export class TagTreeDataProvider
   }
 
   private onDidSaveTextDocument(document: vscode.TextDocument): Promise<void> {
+    // console.log("saved doc", this.tagToTagNodeMap);
     return this.updateTagsForFile(document.uri);
   }
 
   private async updateTagsForFile(fileUri: Uri): Promise<void> {
     const filePath = fileUri.fsPath;
-    if (!filePath.includes("/src/")) {
+    // console.log("before update", filePath, this.tagToTagNodeMap);
+    if (
+      !filePath.includes("/src/") ||
+      !this.matchesWatchedFileExtensions(filePath)
+    ) {
       return;
     }
 
-    if (this.matchesWatchedFileExtensions(filePath)) {
-      let fileNode = this.filePathTofileNodeMap[filePath];
-      let shouldUpdate = false;
-      if (!fileNode) {
-        shouldUpdate = true;
-        fileNode = {
-          fileUri,
-          fileName: fileUri.fsPath.split("/").pop() || "",
-          tags: [],
-        };
-        this.filePathTofileNodeMap[filePath] = fileNode;
-      }
+    // console.log("after check", filePath, this.tagToTagNodeMap;
 
-      const tags = await this.getTagsFromFileOnFileSystem(filePath);
-      const tagsToAdd = difference(tags, fileNode.tags);
-      const tagsToRemove = difference(fileNode.tags, tags);
-      if (tagsToAdd.length > 0 || tagsToRemove.length > 0) {
-        shouldUpdate = true;
-        fileNode.tags = tags;
-      }
+    let fileNode = this.filePathTofileNodeMap[filePath];
+    let shouldUpdate = false;
+    if (!fileNode) {
+      shouldUpdate = true;
+      fileNode = {
+        fileUri,
+        fileName: fileUri.fsPath.split("/").pop() || "",
+        tags: [],
+      };
+      this.filePathTofileNodeMap[filePath] = fileNode;
+    }
 
-      const modifiedTags: Node[] = [];
-      tagsToAdd.forEach((tag) => {
-        let tagNode = this.tagToTagNodeMap[tag];
-        if (!tagNode) {
-          tagNode = { name: tag, filePaths: [], childTags: [] };
-          this.tagToTagNodeMap[tag] = tagNode;
-        }
-        tagNode.filePaths.push(filePath);
+    const tags = await this.getTagsFromFileOnFileSystem(filePath);
+    const tagsToAdd = difference(tags, fileNode.tags);
+    const tagsToRemove = difference(fileNode.tags, tags);
+    if (tagsToAdd.length > 0 || tagsToRemove.length > 0) {
+      shouldUpdate = true;
+      fileNode.tags = tags;
+    }
+
+    const modifiedTags: Node[] = [];
+    tagsToAdd.forEach((tag) => {
+      let tagNode = this.tagToTagNodeMap[tag];
+      if (!tagNode) {
+        tagNode = { name: tag, filePaths: [], childTags: [] };
+        this.tagToTagNodeMap[tag] = tagNode;
+      }
+      tagNode.filePaths.push(filePath);
+      modifiedTags.push(tagNode);
+    });
+    tagsToRemove.forEach((tag) => {
+      const tagNode = this.tagToTagNodeMap[tag];
+      if (tagNode) {
+        pull(tagNode.filePaths, filePath);
         modifiedTags.push(tagNode);
-      });
-      tagsToRemove.forEach((tag) => {
-        const tagNode = this.tagToTagNodeMap[tag];
-        if (tagNode) {
-          pull(tagNode.filePaths, filePath);
-          modifiedTags.push(tagNode);
-          if (isEmpty(tagNode.filePaths) && isEmpty(tagNode.childTags)) {
-            unset(this.tagToTagNodeMap, tag);
-          }
+        if (isEmpty(tagNode.filePaths) && isEmpty(tagNode.childTags)) {
+          unset(this.tagToTagNodeMap, tag);
         }
-      });
-
-      if (shouldUpdate) {
-        this._onDidChangeTreeData.fire(undefined);
-        // this._onDidChangeTreeData.fire([...modifiedTags, fileNode]);
       }
+    });
+
+    // console.log("after update", filePath, this.tagToTagNodeMap, tags);
+
+    if (shouldUpdate) {
+      this._onDidChangeTreeData.fire(undefined);
+      // this._onDidChangeTreeData.fire([...modifiedTags, fileNode]);
     }
   }
 
   private matchesWatchedFileExtensions(filePath: string) {
-    const supportedFileExtensions = ["js", "ts", "md", "txt"];
+    const supportedFileExtensions = ["js", "jsx", "ts", "tsx", "md", "txt"];
     const fileExtension = filePath.split(".").pop();
     return includes(supportedFileExtensions, fileExtension);
   }
