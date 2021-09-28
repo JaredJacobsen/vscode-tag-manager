@@ -88,7 +88,7 @@ export class TagTreeDataProvider
 
   private async initTags() {
     const uris = await vscode.workspace.findFiles(
-      "**/*.*",
+      "src/**",
       "**/node_modules/**"
     );
     uris.forEach((uri) => this.updateTagsForFile(uri));
@@ -111,11 +111,13 @@ export class TagTreeDataProvider
     e.files.forEach((file) => {
       this.removeFileData(file);
     });
-
-    this._onDidChangeTreeData.fire(undefined);
   }
 
   private removeFileData(file: Uri) {
+    if (!file.fsPath.includes("/src/")) {
+      return;
+    }
+
     this.filePathTofileNodeMap[file.fsPath].tags.forEach((tag) => {
       const tagNode = this.tagToTagNodeMap[tag];
       pull(tagNode.filePaths, file.fsPath);
@@ -125,6 +127,7 @@ export class TagTreeDataProvider
     });
 
     unset(this.filePathTofileNodeMap, file.fsPath);
+    this._onDidChangeTreeData.fire(undefined);
   }
 
   private onDidSaveTextDocument(document: vscode.TextDocument): Promise<void> {
@@ -133,6 +136,10 @@ export class TagTreeDataProvider
 
   private async updateTagsForFile(fileUri: Uri): Promise<void> {
     const filePath = fileUri.fsPath;
+    if (!filePath.includes("/src/")) {
+      return;
+    }
+
     if (this.matchesWatchedFileExtensions(filePath)) {
       let fileNode = this.filePathTofileNodeMap[filePath];
       let shouldUpdate = false;
