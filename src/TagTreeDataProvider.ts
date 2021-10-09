@@ -1,34 +1,35 @@
 import {
   concat,
-  difference,
-  get,
+  has,
   includes,
-  isEmpty,
-  keys,
+  intersection,
   pull,
-  remove,
   sortBy,
   union,
-  uniq,
   unset,
   values,
-  without,
 } from "lodash";
 import * as vscode from "vscode";
 import { Uri } from "vscode";
-import * as fs from "fs";
+import extractEdgesFromFile from "./extractEdgesFromFile";
+import { getBasename } from "./utils/getBasename";
 
 type TagNode = {
   name: string;
-  childTags: string[];
-  filePaths: string[];
+  isStarred: boolean;
+  in: string[];
+  out: string[];
 };
 type FileNode = {
-  fileUri: Uri;
-  fileName: string;
-  tags: string[];
+  uri: Uri;
+  name: string; //name corresponds to the basename of the file, which must be unique
+  isStarred: boolean;
+  in: string[];
+  out: string[];
 };
 type Node = TagNode | FileNode;
+type Edges = Set<string>;
+type Names = Set<string>;
 
 export class TagTreeDataProvider
   implements vscode.TreeDataProvider<Node>, vscode.DragAndDropController<Node>
@@ -40,16 +41,9 @@ export class TagTreeDataProvider
   public onDidChangeTreeData2: vscode.Event<Node[] | undefined> =
     this._onDidChangeTreeData.event;
 
-  private tagToTagNodeMap: { [key: string]: TagNode } = {};
-
-  public getTags(): string[] {
-    return keys(this.tagToTagNodeMap);
-  }
-  // {
-  //   tagA: { name: "tagA", childTags: [], filePaths: [] },
-  //   tagB: { name: "tagB", childTags: [], filePaths: [] },
-  // };
-  private filePathTofileNodeMap: { [key: string]: FileNode } = {};
+  private nodeIndex: { [name: string]: Node } = {};
+  private nameToEdgesMap: { [name: string]: Edges } = {};
+  private edgeToSourcesMap: { [edge: string]: Names } = {};
 
   constructor(context: vscode.ExtensionContext) {
     const view = vscode.window.createTreeView("tagManager", {
@@ -58,215 +52,68 @@ export class TagTreeDataProvider
       canSelectMany: true,
       dragAndDropController: this,
     });
-    context.subscriptions.push(view);
 
-    this.initTags();
-
-    const disposable1 = vscode.workspace.onDidSaveTextDocument((document) =>
-      this.onDidSaveTextDocument(document)
+    const disposable1 = vscode.workspace.onDidSaveTextDocument(
+      this.onDidSaveTextDocument
     );
-
-    const disposable2 = vscode.workspace.onDidDeleteFiles((e) =>
-      this.onDidDeleteFiles(e)
+    const disposable2 = vscode.workspace.onDidDeleteFiles(
+      this.onDidDeleteFiles
     );
-
-    const disposable3 = vscode.workspace.onDidCreateFiles((e) =>
-      this.onDidCreateFiles(e)
+    const disposable3 = vscode.workspace.onDidCreateFiles(
+      this.onDidCreateFiles
     );
-
-    const disposable4 = vscode.workspace.onDidRenameFiles((e) => {
-      this.onDidRenameFiles(e);
-    });
+    const disposable4 = vscode.workspace.onDidRenameFiles(
+      this.onDidRenameFiles
+    );
 
     context.subscriptions.push(
+      view,
       disposable1,
       disposable2,
       disposable3,
       disposable4
     );
+
+    this.initGraph();
   }
-
-  private async initTags() {
-    const uris = await vscode.workspace.findFiles(
-      "**/src/**",
-      "**/node_modules/**"
-    );
-    uris.forEach((uri) => this.updateTagsForFile(uri));
-  }
-
-  private onDidRenameFiles(e: vscode.FileRenameEvent) {
-    // console.log("move file", e);
-    e.files.forEach(({ oldUri, newUri }) => {
-      this.removeFileData(oldUri);
-      this.updateTagsForFile(newUri);
-    });
-  }
-
-  private onDidCreateFiles(e: vscode.FileCreateEvent) {
-    e.files.forEach((file) => {
-      this.updateTagsForFile(file);
-    });
-  }
-
-  private onDidDeleteFiles(e: vscode.FileDeleteEvent) {
-    e.files.forEach((file) => {
-      this.removeFileData(file);
-    });
-  }
-
-  private removeFileData(file: Uri) {
-    if (!file.fsPath.includes("/src/")) {
-      return;
-    }
-
-    this.filePathTofileNodeMap[file.fsPath].tags.forEach((tag) => {
-      const tagNode = this.tagToTagNodeMap[tag];
-      pull(tagNode.filePaths, file.fsPath);
-      if (isEmpty(tagNode.filePaths) && isEmpty(tagNode.childTags)) {
-        unset(this.tagToTagNodeMap, tag);
-      }
-    });
-
-    unset(this.filePathTofileNodeMap, file.fsPath);
-    this._onDidChangeTreeData.fire(undefined);
-  }
-
-  private onDidSaveTextDocument(document: vscode.TextDocument): Promise<void> {
-    // console.log("saved doc", this.tagToTagNodeMap);
-    return this.updateTagsForFile(document.uri);
-  }
-
-  private async updateTagsForFile(fileUri: Uri): Promise<void> {
-    const filePath = fileUri.fsPath;
-    // console.log("before update", filePath, this.tagToTagNodeMap);
-    if (
-      !filePath.includes("/src/") ||
-      !this.matchesWatchedFileExtensions(filePath)
-    ) {
-      return;
-    }
-
-    // console.log("after check", filePath, this.tagToTagNodeMap;
-
-    let fileNode = this.filePathTofileNodeMap[filePath];
-    let shouldUpdate = false;
-    if (!fileNode) {
-      shouldUpdate = true;
-      fileNode = {
-        fileUri,
-        fileName: fileUri.fsPath.split("/").pop() || "",
-        tags: [],
-      };
-      this.filePathTofileNodeMap[filePath] = fileNode;
-    }
-
-    const tags = await this.getTagsFromFileOnFileSystem(filePath);
-    const tagsToAdd = difference(tags, fileNode.tags);
-    const tagsToRemove = difference(fileNode.tags, tags);
-    if (tagsToAdd.length > 0 || tagsToRemove.length > 0) {
-      shouldUpdate = true;
-      fileNode.tags = tags;
-    }
-
-    const modifiedTags: Node[] = [];
-    tagsToAdd.forEach((tag) => {
-      let tagNode = this.tagToTagNodeMap[tag];
-      if (!tagNode) {
-        tagNode = { name: tag, filePaths: [], childTags: [] };
-        this.tagToTagNodeMap[tag] = tagNode;
-      }
-      tagNode.filePaths.push(filePath);
-      modifiedTags.push(tagNode);
-    });
-    tagsToRemove.forEach((tag) => {
-      const tagNode = this.tagToTagNodeMap[tag];
-      if (tagNode) {
-        pull(tagNode.filePaths, filePath);
-        modifiedTags.push(tagNode);
-        if (isEmpty(tagNode.filePaths) && isEmpty(tagNode.childTags)) {
-          unset(this.tagToTagNodeMap, tag);
-        }
-      }
-    });
-
-    // console.log("after update", filePath, this.tagToTagNodeMap, tags);
-
-    if (shouldUpdate) {
-      this._onDidChangeTreeData.fire(undefined);
-      // this._onDidChangeTreeData.fire([...modifiedTags, fileNode]);
-    }
-  }
-
-  private matchesWatchedFileExtensions(filePath: string) {
-    const supportedFileExtensions = ["js", "jsx", "ts", "tsx", "md", "txt"];
-    const fileExtension = filePath.split(".").pop();
-    return includes(supportedFileExtensions, fileExtension);
-  }
-
-  private async getTagsFromFileOnFileSystem(
-    filePath: string
-  ): Promise<string[]> {
-    const buffer = await fs.promises.readFile(filePath);
-    const tags = [];
-    for (const match of buffer.toString().matchAll(/#\[(.*?)\]/g)) {
-      tags.push(match[1]);
-    }
-    return uniq(tags);
-  }
-
-  // Tree data provider
 
   public getChildren(element?: Node): Node[] {
-    if (element && "fileUri" in element) {
-      return [];
+    if (!element) {
+      return sortNodes(values(this.nodeIndex));
     }
 
-    const sortedTagNodes = sortBy(
-      element
-        ? element.childTags.map((tag) => this.tagToTagNodeMap[tag])
-        : values(this.tagToTagNodeMap),
-      ({ name }) => name
+    const inAndOutNodes = intersection(element.in, element.out).map(
+      (name) => this.nodeIndex[name]
     );
+    const inNodes = element.in.map((name) => this.nodeIndex[name]);
+    const outNodes = element.out.map((name) => this.nodeIndex[name]);
 
-    const sortedFileNodes = sortBy(
-      element
-        ? element.filePaths.map(
-            (filePath) => this.filePathTofileNodeMap[filePath]
-          )
-        : values(this.filePathTofileNodeMap).filter((fileNode) =>
-            isEmpty(fileNode.tags)
-          ),
-      ({ fileName }) => fileName
-    );
+    const sortedInAndOutNodes = sortNodes(inAndOutNodes);
+    const sortedInNodes = sortNodes(inNodes);
+    const sortedOutNodes = sortNodes(outNodes);
 
-    return concat<Node>(sortedTagNodes, sortedFileNodes);
+    return concat<Node>(sortedInAndOutNodes, sortedInNodes, sortedOutNodes);
   }
 
   public getTreeItem(element: Node): vscode.TreeItem {
-    if ("fileName" in element) {
+    if (isFileNode(element)) {
       return {
-        label: element.fileName,
-        tooltip: new vscode.MarkdownString(element.fileUri.fsPath),
-        collapsibleState: vscode.TreeItemCollapsibleState.None,
-        resourceUri: element.fileUri,
+        label: element.name,
+        tooltip: new vscode.MarkdownString(element.uri.fsPath),
+        iconPath: vscode.ThemeIcon.File,
+        collapsibleState: vscode.TreeItemCollapsibleState.Collapsed,
+        resourceUri: element.uri,
         command: {
           title: "",
           command: "vscode.open",
-          arguments: [element.fileUri],
+          arguments: [element.uri],
         },
       };
     }
     return {
       label: element.name,
-      collapsibleState:
-        element.childTags.length > 0 || element.filePaths.length > 0
-          ? vscode.TreeItemCollapsibleState.Collapsed
-          : vscode.TreeItemCollapsibleState.None,
+      collapsibleState: vscode.TreeItemCollapsibleState.Collapsed,
     };
-  }
-
-  dispose(): void {
-    // nothing to dispose
   }
 
   // Drag and drop controller
@@ -274,17 +121,193 @@ export class TagTreeDataProvider
     sources: vscode.TreeDataTransfer,
     target: Node
   ): Promise<void> {
-    const treeItems = JSON.parse(
+    const treeItems: Node[] = JSON.parse(
       await sources.items.get("text/treeitems")!.asString()
     );
 
-    if ("childTags" in target) {
-      treeItems.forEach((item: any) => {
-        if ("childTags" in item) {
-          target.childTags = union(target.childTags, [item.name]);
-        }
-      });
+    treeItems.forEach((item) => {
+      target.in = union(target.in, [item.name]);
+    });
+
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  public getNodes(): Node[] {
+    return values(this.nodeIndex);
+  }
+
+  public getTagNodes(): TagNode[] {
+    return values(this.nodeIndex).filter((node) => !isFileNode(node));
+  }
+
+  private async initGraph() {
+    const uriList = await vscode.workspace.findFiles(
+      "**/src/**",
+      "**/node_modules/**"
+    );
+    uriList.forEach((uri) => this.updateGraphOnFileChange(uri));
+  }
+
+  private onDidSaveTextDocument(document: vscode.TextDocument): Promise<void> {
+    return this.updateGraphOnFileChange(document.uri);
+  }
+
+  private onDidCreateFiles(e: vscode.FileCreateEvent) {
+    e.files.forEach((uri) => {
+      this.updateGraphOnFileChange(uri);
+    });
+  }
+
+  private onDidRenameFiles(e: vscode.FileRenameEvent) {
+    e.files.forEach(({ oldUri, newUri }) => {
+      this.updateGraphOnFileDelete(oldUri);
+      this.updateGraphOnFileChange(newUri);
+    });
+  }
+
+  private onDidDeleteFiles(e: vscode.FileDeleteEvent) {
+    e.files.forEach((uri) => {
+      this.updateGraphOnFileDelete(uri);
+    });
+  }
+
+  private async updateGraphOnFileChange(uri: Uri): Promise<void> {
+    const filepath = uri.fsPath;
+    if (this.ignoreFile(filepath)) {
+      return;
+    }
+    const basename = getBasename(filepath);
+
+    let shouldUpdate = false;
+    let fileNode = this.nodeIndex[basename];
+    if (!fileNode) {
+      shouldUpdate = true;
+      fileNode = {
+        uri,
+        name: basename,
+        isStarred: false,
+        in: [],
+        out: [],
+      };
+      this.nodeIndex[basename] = fileNode;
+      this.nameToEdgesMap[basename] = new Set();
+    }
+
+    const prevEdges = this.nameToEdgesMap[basename];
+    const newEdges = await extractEdgesFromFile(filepath);
+    this.nameToEdgesMap[basename] = newEdges;
+
+    const edgesToAdd = difference(newEdges, prevEdges);
+    if (edgesToAdd.size > 0) {
+      shouldUpdate = true;
+    }
+    this.addSourceForEdges(basename, edgesToAdd);
+
+    shouldUpdate =
+      this.deleteSourceForEdges(basename, difference(prevEdges, newEdges)) ||
+      shouldUpdate;
+
+    if (shouldUpdate) {
       this._onDidChangeTreeData.fire(undefined);
+      // this._onDidChangeTreeData.fire([...modifiedTags, fileNode]);
     }
   }
+
+  private updateGraphOnFileDelete(uri: Uri) {
+    const filepath = uri.fsPath;
+    if (this.ignoreFile(filepath)) {
+      return;
+    }
+    const basename = getBasename(filepath);
+
+    this.deleteSourceForEdges(basename, this.nameToEdgesMap[basename]);
+    unset(this.nameToEdgesMap, basename);
+
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  private addSourceForEdges(source: string, edges: Edges) {
+    edges.forEach((edge) => {
+      const names = this.edgeToSourcesMap[edge];
+      if (names) {
+        names.add(source);
+      } else {
+        this.edgeToSourcesMap[edge] = new Set([source]);
+        const [from, to] = edge.split("->");
+        if (!has(this.nodeIndex, from)) {
+          this.nodeIndex[from] = {
+            name: from,
+            isStarred: false,
+            in: [],
+            out: [],
+          };
+        }
+        const fromNode = this.nodeIndex[from];
+        if (!has(this.nodeIndex, to)) {
+          this.nodeIndex[to] = {
+            name: to,
+            isStarred: false,
+            in: [],
+            out: [],
+          };
+        }
+        const toNode = this.nodeIndex[to];
+        fromNode.out.push(to);
+        toNode.in.push(from);
+      }
+    });
+  }
+
+  private deleteSourceForEdges(source: string, edges: Edges) {
+    let shouldUpdate = false;
+
+    edges.forEach((edge) => {
+      const edgeSources = this.edgeToSourcesMap[edge];
+      edgeSources.delete(source);
+      if (edgeSources.size === 0) {
+        shouldUpdate = true;
+        unset(this.edgeToSourcesMap, edge);
+        const [from, to] = edge.split("->");
+        pull(this.nodeIndex[from].out, to);
+        pull(this.nodeIndex[to].in, from);
+      }
+    });
+
+    return shouldUpdate;
+  }
+
+  private ignoreFile(filepath: string): boolean {
+    return (
+      !filepath.includes("/src/") ||
+      !this.matchesWatchedFileExtensions(filepath)
+    );
+  }
+
+  private matchesWatchedFileExtensions(filepath: string) {
+    const supportedFileExtensions = ["js", "jsx", "ts", "tsx", "md", "txt"];
+    const fileExtension = filepath.split(".").pop();
+    return includes(supportedFileExtensions, fileExtension);
+  }
+
+  dispose(): void {}
+}
+
+function sortNodes(nodes: Node[]) {
+  const tagNodes = nodes.filter((node) => !("uri" in node));
+  const fileNodes = nodes.filter((node) => "uri" in node);
+  const sortedTagNodes = sortBy(tagNodes, ({ name }) => name);
+  const sortedFileNodes = sortBy(fileNodes, ({ name }) => name);
+  return concat<Node>(sortedTagNodes, sortedFileNodes);
+}
+
+function difference<t>(setA: Set<t>, setB: Set<t>) {
+  let _difference = new Set(setA);
+  for (let elem of setB) {
+    _difference.delete(elem);
+  }
+  return _difference;
+}
+
+function isFileNode(node: FileNode | TagNode): node is FileNode {
+  return (node as FileNode).uri !== undefined;
 }
